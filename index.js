@@ -11,9 +11,9 @@ import {
 
 const l = console.log;
 
-const getHeaders = (users) => {
-  const propertyNames = Object.keys(users[0].properties);
-  propertyNames.push('notion_id', 'notion_url');
+const getHeaders = (data) => {
+  const propertyNames = Object.keys(data[0].properties);
+  propertyNames.push('notion_id', 'notion_url', 'original_data');
   return propertyNames;
 };
 const propertiesHandler = (properties) => {
@@ -21,19 +21,20 @@ const propertiesHandler = (properties) => {
   return Object.values(properties).map((prop) => {
     const { type } = prop;
     const rawValue = prop[type];
+    if (isEmpty(rawValue)) return '';
     switch (type) {
       case 'email':
       case 'phone_number':
       case 'url':
-        return isEmpty(rawValue) ? '' : rawValue.trim();
+        return rawValue.trim();
       case 'rich_text':
       case 'title':
-        return isEmpty(rawValue) ? ''
-          : rawValue.map(({ plain_text }) => `"${plain_text.trim()}"`).join(';');
-      case 'relation':
+        return rawValue.map(({ plain_text }) => `"${plain_text.trim()}"`).join(';');
       case 'people':
-        return isEmpty(rawValue) ? ''
-          : rawValue.map(({ id }) => `"${id}"`).join(';');
+        return rawValue.map(({ name, people = { email: '' } }) => `"${name.trim()} | ${people.email}"`)
+          .join(';');
+      case 'relation':
+        return rawValue.map(({ id }) => `"${id}"`).join(';');
       default:
         return (typeof rawValue === 'string') ? rawValue.trim() : JSON.stringify(rawValue);
     }
@@ -47,7 +48,8 @@ const generateTSV = async (filepath, data) => {
   data.forEach((record) => {
     const { id, url, properties } = record;
     const fields = propertiesHandler(properties);
-    fields.push(id, url);
+    const originalData = JSON.stringify(properties);
+    fields.push(id, url, originalData);
     const row = fields.join('\t');
     write(row);
   });
@@ -82,7 +84,7 @@ const app = async () => {
         database_id,
         start_cursor,
       })
-        .catch((err) => errToLog(err, 'Запрос в Notion'));
+        .catch((err) => errToLog(err, 'Notion request'));
       loadings.push(...loaded.results);
       start_cursor = loaded.next_cursor;
       hasMore = loaded.has_more;
@@ -94,7 +96,7 @@ const app = async () => {
     return loadings;
   };
 
-  l('Подготавливаю каталоги');
+  l('Prepare catalogs');
   await prepareCatalogs();
 
   const dbs = [
@@ -103,37 +105,37 @@ const app = async () => {
   ];
 
   for (const [dbName, dbId] of dbs) {
-    l(`Скачиваю данные ${dbName}`);
+    l(`Download data ${dbName}`);
     const filename = `${processDateTime}-${dbName}`;
     const dataPath = buildDataPath(filename);
     const backupPath = buildDataPath(filename, 'tsv');
     const data = await downloadData(dbId)
       .catch((err) => {
-        errToLog(err, `Загрузка данных ${dbName}`);
+        errToLog(err, `Download data ${dbName}`);
         log.end();
-        throw new Error(`Приложение остановлено. Смотрите логи: ${logsPath}`);
+        throw new Error(`App was stopped. See logs: ${logsPath}`);
       });
 
-    l(`Сохраняю в файл ${dataPath}`);
+    l(`Write raw data to file ${dataPath}`);
     await writeFile(dataPath, data)
       .catch((err) => {
-        errToLog(err, `Запись в файл загруженных данных ${dbName}`);
+        errToLog(err, `Write raw data ${dbName}`);
         log.end();
-        console.log('Полученные данные:', data);
-        throw new Error(`Приложение остановлено. Смотрите логи: ${logsPath}`);
+        console.log('Data:', data);
+        throw new Error(`App was stopped. See logs: ${logsPath}`);
       });
 
-    l(`Формирую бэкап ${backupPath}`);
+    l(`Create backup ${backupPath}`);
     await generateTSV(backupPath, data)
       .catch((err) => {
-        errToLog(err, `Формирование бэкапа ${dbName}`);
+        errToLog(err, `Create backup ${dbName}`);
         log.end();
-        throw new Error(`Приложение остановлено. Смотрите логи: ${logsPath}`);
+        throw new Error(`App was stopped. See logs: ${logsPath}`);
       });
-    log.end();
-
-    return 'Работа приложения завершена корректно';
   }
+
+  log.end();
+  return 'Success!';
 };
 
 export default app;

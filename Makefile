@@ -1,7 +1,7 @@
 setup:
 	cp -u .env.example .env || true
 	npm ci
-	@echo "\n! Впишите секреты в файл .env!\n"
+	@echo "\n! Write secrets to a file .env!\n"
 
 start:
 	node ./bin/index.js
