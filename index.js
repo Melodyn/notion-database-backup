@@ -7,54 +7,10 @@ import {
   wait,
   buildLogPath,
   buildDataPath,
+  convertToHumanReadableEntries,
 } from './helpers.js';
 
 const l = console.log;
-
-const getHeaders = (data) => {
-  const propertyNames = Object.keys(data[0].properties);
-  propertyNames.push('notion_id', 'notion_url', 'original_data');
-  return propertyNames;
-};
-const propertiesHandler = (properties) => {
-  const isEmpty = (prop) => !prop || prop.length === 0;
-  return Object.values(properties).map((prop) => {
-    const { type } = prop;
-    const rawValue = prop[type];
-    if (isEmpty(rawValue)) return '';
-    switch (type) {
-      case 'email':
-      case 'phone_number':
-      case 'url':
-        return rawValue.trim();
-      case 'rich_text':
-      case 'title':
-        return rawValue.map(({ plain_text }) => `"${plain_text.trim()}"`).join(';');
-      case 'people':
-        return rawValue.map(({ name, people = { email: '' } }) => `"${name.trim()} | ${people.email}"`)
-          .join(';');
-      case 'relation':
-        return rawValue.map(({ id }) => `"${id}"`).join(';');
-      default:
-        return (typeof rawValue === 'string') ? rawValue.trim() : JSON.stringify(rawValue);
-    }
-  });
-};
-const generateTSV = async (filepath, data) => {
-  const file = fs.createWriteStream(filepath);
-  const write = (row) => file.write(`${row}\n`, 'utf-8');
-  const headersRow = getHeaders(data).join('\t');
-  write(headersRow);
-  data.forEach((record) => {
-    const { id, url, properties } = record;
-    const fields = propertiesHandler(properties);
-    const originalData = JSON.stringify(properties);
-    fields.push(id, url, originalData);
-    const row = fields.join('\t');
-    write(row);
-  });
-  file.end();
-};
 
 const app = async () => {
   const { parsed: config, error } = dotenv.config();
@@ -73,6 +29,8 @@ const app = async () => {
     'utf-8',
   );
 
+  // Notion выдаёт данные частями (пагинация), но ограничиает количество запросов в минуту
+  // Поэтому реализовано чанкование с ожиданием в полсекунды.
   const downloadData = async (database_id) => {
     const loadings = [];
     let start_cursor;
@@ -83,8 +41,7 @@ const app = async () => {
       const loaded = await notion.databases.query({
         database_id,
         start_cursor,
-      })
-        .catch((err) => errToLog(err, 'Notion request'));
+      });
       loadings.push(...loaded.results);
       start_cursor = loaded.next_cursor;
       hasMore = loaded.has_more;
@@ -99,12 +56,13 @@ const app = async () => {
   l('Prepare catalogs');
   await prepareCatalogs();
 
-  const dbs = [
+  const databases = [
     ['users', USERS_DATABASE_ID],
     ['companies', COMPANIES_DATABASE_ID],
   ];
 
-  for (const [dbName, dbId] of dbs) {
+  for (let i = 0; i < databases.length; i += 1) {
+    const [dbName, dbId] = databases[i];
     l(`Download data ${dbName}`);
     const filename = `${processDateTime}-${dbName}`;
     const dataPath = buildDataPath(filename);
@@ -117,19 +75,23 @@ const app = async () => {
       });
 
     l(`Write raw data to file ${dataPath}`);
-    await writeFile(dataPath, data)
+    await writeFile(dataPath, JSON.stringify(data, null, 1))
       .catch((err) => {
         errToLog(err, `Write raw data ${dbName}`);
         log.end();
-        console.log('Data:', data);
+        console.error(err);
         throw new Error(`App was stopped. See logs: ${logsPath}`);
       });
 
-    l(`Create backup ${backupPath}`);
-    await generateTSV(backupPath, data)
+    l(`Create tsv-backup ${backupPath}`);
+    const tsvData = convertToHumanReadableEntries(data)
+      .map((row) => row.join('\t')) // столбцы разделены табуляцией, потому что точка с запятой используются в propertiesHandler
+      .join('\n');
+    await writeFile(backupPath, tsvData)
       .catch((err) => {
         errToLog(err, `Create backup ${dbName}`);
         log.end();
+        console.error(err);
         throw new Error(`App was stopped. See logs: ${logsPath}`);
       });
   }
